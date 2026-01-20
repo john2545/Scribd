@@ -2,11 +2,16 @@ import streamlit as st
 import time
 import re
 import base64
+import os
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+# We wrap the import to prevent errors if running locally without the manager installed
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+except ImportError:
+    ChromeDriverManager = None
 
 # Page Config
 st.set_page_config(page_title="Scribd Downloader", page_icon="📄")
@@ -31,18 +36,34 @@ def convert_scribd_link(url):
 def setup_driver():
     """Configures the Chrome WebDriver for headless execution."""
     chrome_options = Options()
-    chrome_options.add_argument("--headless=new")  # Run in headless mode
+    chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     
-    # Initialize driver
-    service = Service(ChromeDriverManager().install())
+    # ---------------------------------------------------------
+    # FIX FOR STREAMLIT CLOUD
+    # ---------------------------------------------------------
+    # Check if we are running on Streamlit Cloud (Debian) by looking for the binary
+    if os.path.exists("/usr/bin/chromium"):
+        chrome_options.binary_location = "/usr/bin/chromium"
+        service = Service("/usr/bin/chromedriver")
+    else:
+        # Fallback for local development (Windows/Mac)
+        if ChromeDriverManager:
+            service = Service(ChromeDriverManager().install())
+        else:
+            st.error("Webdriver Manager not found and not on Linux. Please install it.")
+            return None
+
     driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
 
 def generate_pdf(target_url):
     driver = setup_driver()
+    if not driver:
+        return None
+        
     status_text = st.empty()
     progress_bar = st.progress(0)
     
@@ -103,11 +124,9 @@ def generate_pdf(target_url):
         """
         driver.execute_script(cleanup_script)
         
-        # 4. Generate PDF via CDP (Chrome DevTools Protocol)
+        # 4. Generate PDF via CDP
         status_text.info("Generating PDF file...")
         
-        # Determine height based on scrolling (optional, standard print usually handles this, 
-        # but printToPDF is robust)
         pdf_data = driver.execute_cdp_cmd("Page.printToPDF", {
             "printBackground": True,
             "preferCSSPageSize": True,
@@ -141,7 +160,7 @@ if st.button("Download PDF"):
                 if pdf_bytes:
                     st.success("PDF generated successfully!")
                     
-                    # Create a valid filename from URL or timestamp
+                    # Create a valid filename
                     doc_id = re.search(r'embeds/(\d+)/', embed_url).group(1)
                     file_name = f"scribd_doc_{doc_id}.pdf"
                     
