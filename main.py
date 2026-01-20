@@ -91,37 +91,56 @@ def generate_pdf(target_url):
         
         # 3. Clean up DOM (Remove toolbars and promo banners)
         status_text.info("Cleaning up page elements...")
+        # 3. Clean up DOM (Remove toolbars, promo banners, and cookie footers)
+        status_text.info("Cleaning up page elements...")
         
         cleanup_script = """
-        // Remove toolbar top
+        // 1. Remove standard Scribd toolbars
         var toolbarTop = document.querySelector('.toolbar_top');
         if (toolbarTop) toolbarTop.remove();
 
-        // Remove toolbar bottom
         var toolbarBottom = document.querySelector('.toolbar_bottom');
         if (toolbarBottom) toolbarBottom.remove();
         
-        // Remove document scroller wrappers to simplify structure
+        // 2. Remove document scroller wrappers to simplify structure
         var scrollers = document.getElementsByClassName("document_scroller");
         for (var i = 0; i < scrollers.length; i++) {
             scrollers[i].setAttribute('class', '');
         }
         
-        // Remove "Read free for 30 days" banners if any
+        // 3. Remove "Read free for 30 days" promos
         var promos = document.querySelectorAll('[class*="promo"]');
         promos.forEach(el => el.remove());
         
-        // Inject CSS to remove margins for PDF printing
+        // 4. REMOVE COOKIE/PRIVACY BANNER (The yellow footer)
+        // Try common OneTrust IDs
+        var otHost = document.getElementById('onetrust-consent-sdk');
+        if (otHost) otHost.remove();
+        
+        var otBanner = document.getElementById('onetrust-banner-sdk');
+        if (otBanner) otBanner.remove();
+
+        // 5. Fallback: Find and remove any container with the specific cookie text
+        var allDivs = document.querySelectorAll('div, footer, section');
+        allDivs.forEach(el => {
+            if (el.textContent.includes('This website utilizes technologies such as cookies')) {
+                el.style.display = 'none';
+                el.remove();
+            }
+        });
+
+        // 6. Inject CSS for clean printing
         var style = document.createElement('style');
         style.textContent = `
             @media print {
                 @page { margin: 0; }
                 body { background-color: white; }
-                .toolbar_top, .toolbar_bottom, .promo_banner { display: none !important; }
+                .toolbar_top, .toolbar_bottom, .promo_banner, #onetrust-consent-sdk { display: none !important; }
             }
         `;
         document.head.appendChild(style);
         """
+        driver.execute_script(cleanup_script)
         driver.execute_script(cleanup_script)
         
         # 4. Generate PDF via CDP
