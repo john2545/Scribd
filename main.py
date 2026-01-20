@@ -5,28 +5,57 @@ import base64
 import os
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
-# We wrap the import to prevent errors if running locally without the manager installed
+
+# Try importing for local dev, handle failure for Cloud
 try:
     from webdriver_manager.chrome import ChromeDriverManager
 except ImportError:
     ChromeDriverManager = None
 
-# Page Config
-st.set_page_config(page_title="Scribd Downloader", page_icon="📄")
+# 1. Page Configuration
+st.set_page_config(
+    page_title="Scribd to PDF",
+    page_icon="📖",
+    layout="centered",
+    initial_sidebar_state="expanded"
+)
 
-st.title("📄 Scribd Document Downloader")
+# 2. Custom CSS for UI Polish
 st.markdown("""
-This app converts a Scribd document URL into a downloadable PDF.
-*Note: This tool is for educational purposes only.*
-""")
+    <style>
+    .stButton>button {
+        width: 100%;
+        border-radius: 5px;
+        height: 3em;
+        font-weight: bold;
+    }
+    .reportview-container .main .block-container {
+        padding-top: 2rem;
+    }
+    footer {visibility: hidden;}
+    </style>
+""", unsafe_allow_html=True)
 
-# Input URL
-url = st.text_input("Enter Scribd Document URL", placeholder="https://www.scribd.com/document/123456789/Example-Document")
+# 3. Sidebar (Instructions & Disclaimer)
+with st.sidebar:
+    st.header("📖 How to use")
+    st.markdown("""
+    1. Go to Scribd and open a document.
+    2. Copy the URL (e.g., `www.scribd.com/document/...`).
+    3. Paste it in the input field.
+    4. Click **Convert to PDF**.
+    """)
+    
+    st.divider()
+    
+    st.info("""
+    **Note:** This tool lazily scrolls through the document to ensure images render before printing.
+    """)
+    st.caption("⚠️ For educational purposes only. Please respect copyright laws.")
 
+# 4. Helper Functions
 def convert_scribd_link(url):
-    """Converts a standard Scribd URL to the embed/content URL."""
     match = re.search(r'https://www\.scribd\.com/document/(\d+)/', url)
     if match:
         doc_id = match.group(1)
@@ -34,102 +63,80 @@ def convert_scribd_link(url):
     return None
 
 def setup_driver():
-    """Configures the Chrome WebDriver for headless execution."""
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     
-    # ---------------------------------------------------------
-    # FIX FOR STREAMLIT CLOUD
-    # ---------------------------------------------------------
-    # Check if we are running on Streamlit Cloud (Debian) by looking for the binary
+    # Cloud vs Local Logic
     if os.path.exists("/usr/bin/chromium"):
         chrome_options.binary_location = "/usr/bin/chromium"
         service = Service("/usr/bin/chromedriver")
     else:
-        # Fallback for local development (Windows/Mac)
         if ChromeDriverManager:
             service = Service(ChromeDriverManager().install())
         else:
-            st.error("Webdriver Manager not found and not on Linux. Please install it.")
+            st.error("❌ Driver not found. Please install webdriver-manager locally.")
             return None
 
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    return driver
+    return webdriver.Chrome(service=service, options=chrome_options)
 
-def generate_pdf(target_url):
+def generate_pdf(target_url, status_container):
     driver = setup_driver()
     if not driver:
         return None
-        
-    status_text = st.empty()
-    progress_bar = st.progress(0)
     
     try:
-        # 1. Load Page
-        status_text.info("Launching browser and loading document...")
+        # Step 1: Load
+        status_container.write("🌐 Launching browser...")
         driver.get(target_url)
-        time.sleep(3) # Wait for initial load
+        time.sleep(3)
 
-        # 2. Scroll to load all pages (Lazy Loading)
-        status_text.info("Scrolling through document to load all pages...")
+        # Step 2: Scroll
+        status_container.write("📜 Scrolling to render pages (this takes time)...")
         page_elements = driver.find_elements("css selector", "[class*='page']")
+        
+        # Simple progress bar inside the status container
+        progress_bar = status_container.progress(0)
         total_pages = len(page_elements)
         
         for index, page in enumerate(page_elements):
             driver.execute_script("arguments[0].scrollIntoView();", page)
-            time.sleep(0.5) # Slight delay to let images render
-            
-            # Update progress
+            time.sleep(0.4) # Optimized timing
             if total_pages > 0:
-                progress = min((index + 1) / total_pages, 1.0)
-                progress_bar.progress(progress)
+                progress_bar.progress(min((index + 1) / total_pages, 1.0))
         
-        time.sleep(2) # Final wait after scrolling
+        time.sleep(1) 
         
-        # 3. Clean up DOM (Remove toolbars and promo banners)
-        status_text.info("Cleaning up page elements...")
-        # 3. Clean up DOM (Remove toolbars, promo banners, and cookie footers)
-        status_text.info("Cleaning up page elements...")
-        
+        # Step 3: Cleanup
+        status_container.write("🧹 Removing banners and cookies...")
         cleanup_script = """
-        // 1. Remove standard Scribd toolbars
-        var toolbarTop = document.querySelector('.toolbar_top');
-        if (toolbarTop) toolbarTop.remove();
-
-        var toolbarBottom = document.querySelector('.toolbar_bottom');
-        if (toolbarBottom) toolbarBottom.remove();
+        // Remove standard toolbars
+        document.querySelectorAll('.toolbar_top, .toolbar_bottom').forEach(el => el.remove());
         
-        // 2. Remove document scroller wrappers to simplify structure
+        // Remove scroller styles
         var scrollers = document.getElementsByClassName("document_scroller");
-        for (var i = 0; i < scrollers.length; i++) {
-            scrollers[i].setAttribute('class', '');
-        }
+        for (var i = 0; i < scrollers.length; i++) { scrollers[i].setAttribute('class', ''); }
         
-        // 3. Remove "Read free for 30 days" promos
-        var promos = document.querySelectorAll('[class*="promo"]');
-        promos.forEach(el => el.remove());
+        // Remove promos
+        document.querySelectorAll('[class*="promo"]').forEach(el => el.remove());
         
-        // 4. REMOVE COOKIE/PRIVACY BANNER (The yellow footer)
-        // Try common OneTrust IDs
-        var otHost = document.getElementById('onetrust-consent-sdk');
-        if (otHost) otHost.remove();
-        
-        var otBanner = document.getElementById('onetrust-banner-sdk');
-        if (otBanner) otBanner.remove();
+        // Remove OneTrust/Cookie Banners
+        var ids = ['onetrust-consent-sdk', 'onetrust-banner-sdk'];
+        ids.forEach(id => {
+            var el = document.getElementById(id);
+            if(el) el.remove();
+        });
 
-        // 5. Fallback: Find and remove any container with the specific cookie text
-        var allDivs = document.querySelectorAll('div, footer, section');
-        allDivs.forEach(el => {
-            if (el.textContent.includes('This website utilizes technologies such as cookies')) {
-                el.style.display = 'none';
+        // Text content fallback removal
+        document.querySelectorAll('div, footer').forEach(el => {
+            if (el.textContent && el.textContent.includes('This website utilizes technologies such as cookies')) {
                 el.remove();
             }
         });
-
-        // 6. Inject CSS for clean printing
+        
+        // CSS Injection
         var style = document.createElement('style');
         style.textContent = `
             @media print {
@@ -141,53 +148,63 @@ def generate_pdf(target_url):
         document.head.appendChild(style);
         """
         driver.execute_script(cleanup_script)
-        driver.execute_script(cleanup_script)
         
-        # 4. Generate PDF via CDP
-        status_text.info("Generating PDF file...")
-        
+        # Step 4: Print
+        status_container.write("🖨️ Generating PDF...")
         pdf_data = driver.execute_cdp_cmd("Page.printToPDF", {
             "printBackground": True,
             "preferCSSPageSize": True,
-            "marginTop": 0,
-            "marginBottom": 0,
-            "marginLeft": 0,
-            "marginRight": 0
+            "marginTop": 0, "marginBottom": 0, "marginLeft": 0, "marginRight": 0
         })
         
         return base64.b64decode(pdf_data['data'])
 
     except Exception as e:
-        st.error(f"An error occurred: {str(e)}")
+        st.error(f"Error: {str(e)}")
         return None
     finally:
         driver.quit()
-        status_text.empty()
-        progress_bar.empty()
 
-# Main App Logic
-if st.button("Download PDF"):
-    if not url:
-        st.warning("Please enter a valid URL.")
-    else:
-        embed_url = convert_scribd_link(url)
+# 5. Main UI Layout
+st.title("📖 Scribd Downloader")
+st.write("Convert Scribd documents to PDF for offline reading.")
+
+url_input = st.text_input("Document URL", placeholder="Paste https://www.scribd.com/document/... here")
+
+# Check if URL is entered before showing the button
+if url_input:
+    # Use columns to make the button not span the whole width if desired, 
+    # but full width (via CSS above) looks good on mobile.
+    if st.button("🚀 Convert to PDF", type="primary"):
+        embed_url = convert_scribd_link(url_input)
         
         if embed_url:
-            with st.spinner("Processing... This may take a minute depending on document length."):
-                pdf_bytes = generate_pdf(embed_url)
+            # The 'st.status' container is great for multi-step processes
+            with st.status("Processing document...", expanded=True) as status:
+                pdf_bytes = generate_pdf(embed_url, status)
                 
                 if pdf_bytes:
-                    st.success("PDF generated successfully!")
+                    status.update(label="✅ Conversion Complete!", state="complete", expanded=False)
                     
-                    # Create a valid filename
+                    # Success UI
+                    st.balloons()
+                    
+                    # Extract ID for filename
                     doc_id = re.search(r'embeds/(\d+)/', embed_url).group(1)
                     file_name = f"scribd_doc_{doc_id}.pdf"
                     
-                    st.download_button(
-                        label="⬇️ Save PDF",
-                        data=pdf_bytes,
-                        file_name=file_name,
-                        mime="application/pdf"
-                    )
+                    st.success("Your document is ready!")
+                    
+                    col1, col2, col3 = st.columns([1,2,1])
+                    with col2:
+                        st.download_button(
+                            label="⬇️ Download PDF",
+                            data=pdf_bytes,
+                            file_name=file_name,
+                            mime="application/pdf",
+                            type="primary"
+                        )
         else:
-            st.error("Invalid Scribd URL. It should look like: https://www.scribd.com/document/12345/Name")
+            st.toast("Invalid URL format. Please check the link.", icon="⚠️")
+else:
+    st.info("Paste a URL above to get started.")
